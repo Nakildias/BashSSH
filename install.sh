@@ -10,4 +10,4 @@ chmod +x ./BashSSH
 sudo mv ./BashSSH /bin/
 #Making non capital alias
 sudo cp /bin/BashSSH /bin/bashssh
-echo "Done you may now use the command "BashSSH or bashssh"
+echo "Done you may now use the command "BashSSH or bashssh""
