@@ -152,4 +152,4 @@ clear
 fi
 
 
-bash ./BashSSH
+BashSSH
