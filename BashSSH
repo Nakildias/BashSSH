@@ -1,0 +1,155 @@
+#!/bin/bash
+
+#EXPORT SSH PROFILES
+touch ~/.config/BashSSH/Selected_Host
+if [ ! -d ~/.config/BashSSH ]; then
+mkdir ~/.config/BashSSH
+touch ~/.config/BashSSH/BashSSH.config
+touch ~/.config/BashSSH/BashSSH_Hosts
+fi
+. ~/.config/BashSSH/BashSSH.config
+
+
+#SET ENVIRONMENT VARIABLES
+CURRENT_SELECTION="$CURRENT_SELECTION_SAVED"
+HOSTS_FILE=~/.config/BashSSH/BashSSH_Hosts
+CURRENT_HOST_FILE=~/.config/BashSSH/Selected_Host
+#FUNCTIONS
+
+help() {
+clear
+echo -e "${MAIN_COLOR}==============={BashSSH Help}===============${NC}"
+echo -e "${INFO_COLOR}h, help${NC}          $S2 Shows commands"
+echo ""
+echo -e "${INFO_COLOR}new, add${NC}         $S2 Adds a host to $HOSTS_FILE"
+echo ""
+echo -e "${INFO_COLOR}sel, select${NC}      $S2 Selects a host from $HOSTS_FILE"
+echo ""
+echo -e "${INFO_COLOR}con, connect${NC}     $S2 Connects to selection $CURRENT_HOST_FILE"
+echo ""
+echo -e "${INFO_COLOR}del, delete,${NC}     $S2 Deletes a host from $HOSTS_FILE"
+echo -e "${INFO_COLOR}rem, remove, rm${NC}"
+echo ""
+echo -e "${INFO_COLOR}list, view, show${NC} $S2 Shows hosts from $HOSTS_FILE"
+echo ""
+echo -e "${INFO_COLOR}info${NC}             $S2 Shows your current selection"
+echo ""
+echo -e "${INFO_COLOR}clear${NC}            $S2 Clears the terminal"
+echo -e "${MAIN_COLOR}==============={BashSSH Help}===============${NC}"
+echo ""
+}
+
+new() {
+clear
+echo -e ${INFO_COLOR}"Enter Username"${NC}
+read -p "$BashSSH $S " HOST
+echo ""
+echo -e ${INFO_COLOR}"Enter IP or Domain"${NC}
+read -p "$BashSSH $S " IP
+echo ""
+echo -e ${INFO_COLOR}"Enter Port (Default = 22)"${NC}
+read -p "$BashSSH $S " PORT
+[ -z "$PORT" ] && PORT="22"
+ID=$(( $(cat "$HOSTS_FILE" | wc -l) + 1 ))
+echo "$ID=$HOST@$IP -p $PORT" >> "$HOSTS_FILE"
+clear
+echo -e "${SUCCESS_COLOR}"[+]"${NC} $HOST@$IP -p $PORT to $HOSTS_FILE"
+}
+
+delete() {
+view
+echo "Enter the ID of the host you want to delete"
+echo ""
+read -p "$BashSSH $S " ID
+clear
+echo -e "${FAILURE_COLOR}"[-]"${NC} $(grep -m 1 $ID= $HOSTS_FILE)"
+sed -i "/^$ID=/d" "$HOSTS_FILE"
+repair
+}
+
+connecting() {
+clear
+echo -e "Connecting to $(cat $CURRENT_HOST_FILE)"
+ssh $(cat $CURRENT_HOST_FILE)
+clear
+echo -e "End of session with $(cat $CURRENT_HOST_FILE)"
+}
+
+repair() {
+temp_file=$(mktemp)
+awk '{ sub(/^[0-9]+/, NR); print }' "$HOSTS_FILE" > "$temp_file"
+mv "$temp_file" "$HOSTS_FILE"
+}
+
+selection() {
+view
+echo "Enter the ID of the host you want to select"
+read -p "$BashSSH $S " ID
+SELECTION=$(grep -m 1 $ID= $HOSTS_FILE | cut -d= -f2-)
+rm $CURRENT_HOST_FILE
+echo $SELECTION > $CURRENT_HOST_FILE
+clear
+echo "Host $(cat $CURRENT_HOST_FILE) is now selected"
+echo ""
+}
+
+info() {
+clear
+echo -e "${INFO_COLOR}Current Selection${NC} $S2 $(cat $CURRENT_HOST_FILE)"
+echo ""
+}
+
+view() {
+clear
+echo -e "${MAIN_COLOR}List of added hosts${NC}"
+echo -e "${SECONDARY_COLOR}$(cat $HOSTS_FILE)${NC}"
+echo ""
+}
+
+if [ "$ALWAYS_SHOW_INFO" == "True" ]; then
+echo -e "${INFO_COLOR}Current Selection${NC} $S2 $(cat $CURRENT_HOST_FILE)"
+echo ""
+fi
+
+read -p "$BashSSH $S " COMMAND
+
+if [ "$COMMAND" = "help" ] || [ "$COMMAND" = "h" ]; then
+help
+fi
+
+if [ "$COMMAND" = "new" ] || [ "$COMMAND" = "add" ]; then
+new
+fi
+
+if [ "$COMMAND" = "delete" ] || [ "$COMMAND" = "del" ] || [ "$COMMAND" = "remove" ] || [ "$COMMAND" = "rem" ] || [ "$COMMAND" = "rm" ]; then
+delete
+fi
+
+
+if [ "$COMMAND" = "connect" ] || [ "$COMMAND" = "con" ]; then
+connecting
+fi
+
+if [ "$COMMAND" = "select" ] || [ "$COMMAND" = "sel" ]; then
+selection
+fi
+
+if [ "$COMMAND" = "list" ] || [ "$COMMAND" = "view" ] || [ "$COMMAND" = "show" ]; then
+view
+fi
+
+if [ "$COMMAND" = "info" ]; then
+info
+fi
+
+if [ "$COMMAND" = "bashfetch" ]; then
+clear
+bashfetch
+fi
+
+if [ "$COMMAND" = "clear" ]; then
+clear
+fi
+
+
+bash ./BashSSH
