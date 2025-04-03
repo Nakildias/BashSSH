@@ -1,155 +1,487 @@
 #!/bin/bash
 
-#EXPORT SSH PROFILES
-touch ~/.config/BashSSH/Selected_Host
-if [ ! -d ~/.config/BashSSH ]; then
-mkdir ~/.config/BashSSH
-touch ~/.config/BashSSH/BashSSH.config
-touch ~/.config/BashSSH/BashSSH_Hosts
-fi
-. ~/.config/BashSSH/BashSSH.config
+# BashSSH - An interactive SSH connection manager
+# Version 2.0
+# By Nakildias
 
+# --- Configuration ---
+CONFIG_DIR="$HOME/.config/bashssh"
+CONFIG_FILE="$CONFIG_DIR/connections.list"
+VERSION="1.3-interactive"
 
-#SET ENVIRONMENT VARIABLES
-CURRENT_SELECTION="$CURRENT_SELECTION_SAVED"
-HOSTS_FILE=~/.config/BashSSH/BashSSH_Hosts
-CURRENT_HOST_FILE=~/.config/BashSSH/Selected_Host
-#FUNCTIONS
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m' # No Color
+PROMPT_COLOR=$GREEN
 
-help() {
-clear
-echo -e "${MAIN_COLOR}==============={BashSSH Help}===============${NC}"
-echo -e "${INFO_COLOR}h, help${NC}          $S2 Shows commands"
-echo ""
-echo -e "${INFO_COLOR}new, add${NC}         $S2 Adds a host to $HOSTS_FILE"
-echo ""
-echo -e "${INFO_COLOR}sel, select${NC}      $S2 Selects a host from $HOSTS_FILE"
-echo ""
-echo -e "${INFO_COLOR}con, connect${NC}     $S2 Connects to selection $CURRENT_HOST_FILE"
-echo ""
-echo -e "${INFO_COLOR}del, delete,${NC}     $S2 Deletes a host from $HOSTS_FILE"
-echo -e "${INFO_COLOR}rem, remove, rm${NC}"
-echo ""
-echo -e "${INFO_COLOR}list, view, show${NC} $S2 Shows hosts from $HOSTS_FILE"
-echo ""
-echo -e "${INFO_COLOR}info${NC}             $S2 Shows your current selection"
-echo ""
-echo -e "${INFO_COLOR}clear${NC}            $S2 Clears the terminal"
-echo -e "${MAIN_COLOR}==============={BashSSH Help}===============${NC}"
-echo ""
+# --- Helper Functions ---
+
+# Ensure config directory and file exist
+ensure_config_exists() {
+    mkdir -p "$CONFIG_DIR"
+    touch "$CONFIG_FILE"
 }
 
-new() {
-clear
-echo -e ${INFO_COLOR}"Enter Username"${NC}
-read -p "$BashSSH $S " HOST
-echo ""
-echo -e ${INFO_COLOR}"Enter IP or Domain"${NC}
-read -p "$BashSSH $S " IP
-echo ""
-echo -e ${INFO_COLOR}"Enter Port (Default = 22)"${NC}
-read -p "$BashSSH $S " PORT
-[ -z "$PORT" ] && PORT="22"
-ID=$(( $(cat "$HOSTS_FILE" | wc -l) + 1 ))
-echo "$ID=$HOST@$IP -p $PORT" >> "$HOSTS_FILE"
-clear
-echo -e "${SUCCESS_COLOR}"[+]"${NC} $HOST@$IP -p $PORT to $HOSTS_FILE"
+# Print error message (does not exit the script)
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
 }
 
-delete() {
-view
-echo "Enter the ID of the host you want to delete"
-echo ""
-read -p "$BashSSH $S " ID
-clear
-echo -e "${FAILURE_COLOR}"[-]"${NC} $(grep -m 1 $ID= $HOSTS_FILE)"
-sed -i "/^$ID=/d" "$HOSTS_FILE"
-repair
+# Print success message
+success_message() {
+    echo -e "${GREEN}$1${NC}"
 }
 
-connecting() {
-clear
-echo -e "Connecting to $(cat $CURRENT_HOST_FILE)"
-ssh $(cat $CURRENT_HOST_FILE)
-clear
-echo -e "End of session with $(cat $CURRENT_HOST_FILE)"
+# Print info message (prints to stderr by default now)
+info_message() {
+    echo -e "${CYAN}$1${NC}" >&2
 }
 
-repair() {
-temp_file=$(mktemp)
-awk '{ sub(/^[0-9]+/, NR); print }' "$HOSTS_FILE" > "$temp_file"
-mv "$temp_file" "$HOSTS_FILE"
+# Function to handle script exit gracefully
+cleanup_and_exit() {
+    echo -e "\n${YELLOW}Exiting BashSSH.${NC}"
+    # Restore terminal settings if changed (though select usually handles itself)
+    stty echo # Ensure echoing is re-enabled if it got turned off somehow
+    exit 0
 }
 
-selection() {
-view
-echo "Enter the ID of the host you want to select"
-read -p "$BashSSH $S " ID
-SELECTION=$(grep -m 1 $ID= $HOSTS_FILE | cut -d= -f2-)
-rm $CURRENT_HOST_FILE
-echo $SELECTION > $CURRENT_HOST_FILE
-clear
-echo "Host $(cat $CURRENT_HOST_FILE) is now selected"
-echo ""
+
+# --- Core Functions ---
+
+# Display help message (prints to stdout)
+show_help() {
+    # Standard output is appropriate for help text requested by user
+    echo -e "${WHITE}BashSSH v${VERSION}${NC} - Interactive SSH Manager"
+    echo -e "-----------------------------------------------------"
+    echo -e "Enter commands at the prompt. Stored in: ${BLUE}${CONFIG_FILE}${NC}"
+    echo ""
+    echo -e "${GREEN}Commands:${NC}"
+    echo -e "  ${YELLOW}/help${NC}                   Show this help message."
+    echo -e "  ${YELLOW}/add ${BLUE}<user@host>${NC}      Add a new SSH connection."
+    echo -e "  ${YELLOW}/new ${BLUE}<user@host>${NC}      Alias for /add."
+    echo -e "  ${YELLOW}/list${NC}                  List all stored connections."
+    echo -e "  ${YELLOW}/ls${NC}                   Alias for /list."
+    echo -e "  ${YELLOW}/connect [index|filter]${NC} Connect to an SSH host."
+    echo -e "                           (Interactive menu if no index/filter)"
+    echo -e "  ${YELLOW}/conn [index|filter]${NC}  Alias for /connect."
+    echo -e "  ${YELLOW}/delete [index|filter]${NC}  Delete an SSH connection."
+    echo -e "                           (Interactive menu if no index/filter)"
+    echo -e "  ${YELLOW}/del | /rm [index|filter]${NC} Aliases for /delete."
+    echo -e "  ${YELLOW}/edit [index|filter]${NC}   Edit an SSH connection."
+    echo -e "                           (Interactive menu if no index/filter)"
+    echo -e "  ${YELLOW}/ping [index|filter]${NC}   Ping the host part of a connection."
+    echo -e "                           (Interactive menu if no index/filter)"
+    echo -e "  ${YELLOW}/exit | /quit | q${NC}      Exit the BashSSH interactive session."
+    echo ""
+    echo -e "${BLUE}Examples (at the bashssh> prompt):${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/add myuser@myserver.com${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/list${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/connect${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/connect 2${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/connect myserver${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/delete 1${NC}"
+    echo -e "  ${PROMPT_COLOR}bashssh>${NC} ${YELLOW}/exit${NC}"
 }
 
-info() {
-clear
-echo -e "${INFO_COLOR}Current Selection${NC} $S2 $(cat $CURRENT_HOST_FILE)"
-echo ""
+# Add a new connection
+add_connection() {
+    local connection="$1"
+    # Argument presence checked in main loop before calling
+
+    # Basic validation
+    if ! [[ "$connection" =~ ^.+@.+$ ]]; then
+         print_error "Invalid format. Use: user@host"
+         return 1 # Indicate failure within the loop
+    fi
+
+    # Check if exists
+    if grep -qFx "$connection" "$CONFIG_FILE"; then
+        # Use info_message (prints to stderr) but phrase neutrally
+        echo -e "${CYAN}Connection '${WHITE}${connection}${NC}' already exists.${NC}" >&2
+        return 0 # Indicate success (or neutral)
+    fi
+
+    # Add to file
+    echo "$connection" >> "$CONFIG_FILE"
+    success_message "Connection '${WHITE}${connection}${NC}' added."
+    return 0
 }
 
-view() {
-clear
-echo -e "${MAIN_COLOR}List of added hosts${NC}"
-echo -e "${SECONDARY_COLOR}$(cat $HOSTS_FILE)${NC}"
-echo ""
+# List all connections (prints to stdout)
+list_connections() {
+    if [[ ! -s "$CONFIG_FILE" ]]; then
+        # This info message is okay on stdout as it's the primary output of the command
+        echo -e "${CYAN}No connections stored yet. Use ${YELLOW}/add user@host${NC}"
+        return 0
+    fi
+    # Header and list go to stdout
+    echo -e "${WHITE}Stored SSH Connections:${NC}"
+    echo -e "-----------------------"
+    awk '{ printf "%s%3d:%s %s%s%s\n", "\033[0;33m", NR, "\033[0m", "\033[1;37m", $0, "\033[0m" }' "$CONFIG_FILE"
+    echo "-----------------------"
+    return 0
 }
 
-if [ "$ALWAYS_SHOW_INFO" == "True" ]; then
-echo -e "${INFO_COLOR}Current Selection${NC} $S2 $(cat $CURRENT_HOST_FILE)"
-echo ""
-fi
+# Select a connection interactively or by index/filter
+# Usage: select_connection <action_verb> [index|filter]
+# Returns the selected connection string via STDOUT, prints prompts/errors to STDERR
+# Returns status 0 on success, 1 on failure/cancel
+select_connection() {
+    local action_verb="$1"
+    local selector="$2"
+    local -a connections=()
+    local -a filtered_connections=()
+    local chosen_connection=""
 
-read -p "$BashSSH $S " COMMAND
+    # Read connections into array, skip empty lines
+    if ! mapfile -t connections < <(grep . "$CONFIG_FILE"); then
+        if [[ ! -f "$CONFIG_FILE" ]] || [[ ! -s "$CONFIG_FILE" ]]; then
+            # Info message to STDERR
+            info_message "No connections stored to ${action_verb}."
+            return 1
+        else
+            # Error message to STDERR
+            print_error "Could not read connections file: $CONFIG_FILE"
+            return 1
+        fi
+    fi
 
-if [ "$COMMAND" = "help" ] || [ "$COMMAND" = "h" ]; then
-help
-fi
+    if [[ ${#connections[@]} -eq 0 ]]; then
+        # Info message to STDERR
+        info_message "No connections stored to ${action_verb}."
+        return 1
+    fi
 
-if [ "$COMMAND" = "new" ] || [ "$COMMAND" = "add" ]; then
-new
-fi
+    # --- Handle direct index or filter selection ---
+    if [[ -n "$selector" ]]; then
+        # Check if selector is a number (index)
+        if [[ "$selector" =~ ^[0-9]+$ ]]; then
+            local index=$((selector - 1))
+            if [[ $index -ge 0 && $index -lt ${#connections[@]} ]]; then
+                chosen_connection="${connections[$index]}"
+                # *** RETURN VALUE: Echo ONLY the selection to STDOUT ***
+                echo "$chosen_connection"
+                return 0 # Indicate success
+            else
+                # Error message to STDERR
+                print_error "Invalid index '$selector'. Use index from 1 to ${#connections[@]}."
+                return 1
+            fi
+        # Check if selector is a filter string
+        else
+            local match_count=0
+            local first_match=""
+            for conn in "${connections[@]}"; do
+                 if [[ "${conn,,}" == *"${selector,,}"* ]]; then
+                    ((match_count++))
+                    first_match="$conn"
+                    filtered_connections+=("$conn")
+                 fi
+            done
 
-if [ "$COMMAND" = "delete" ] || [ "$COMMAND" = "del" ] || [ "$COMMAND" = "remove" ] || [ "$COMMAND" = "rem" ] || [ "$COMMAND" = "rm" ]; then
-delete
-fi
+            if [[ $match_count -eq 0 ]]; then
+                # Error message to STDERR
+                print_error "No connection found matching filter '$selector'."
+                return 1
+            elif [[ $match_count -eq 1 ]]; then
+                chosen_connection="$first_match"
+                # Info message to STDERR
+                info_message "Found unique match for '${selector}': ${WHITE}${chosen_connection}${NC}"
+                # *** RETURN VALUE: Echo ONLY the selection to STDOUT ***
+                echo "$chosen_connection"
+                return 0
+            else
+                 # Multiple matches found, proceed to interactive selection
+                 # Info message to STDERR
+                 info_message "Multiple matches found for '${selector}'. Please choose:"
+                 connections=("${filtered_connections[@]}") # Overwrite with filtered list
+            fi
+        fi
+    fi
+
+    # --- Interactive Selection using 'select' ---
+    # Info message to STDERR
+    info_message "Select a connection to ${action_verb}:"
+    local PS3_backup=$PS3
+    # Prompt for select (goes to STDERR by default)
+    PS3=$(echo -e "${YELLOW}Enter number (or Ctrl+C to cancel): ${NC}")
+    select conn in "${connections[@]}" "Cancel"; do
+        # 'select' writes its menu to STDERR
+        case "$conn" in
+            "Cancel")
+                # Info message to STDERR
+                info_message "Operation cancelled."
+                PS3=$PS3_backup
+                return 1 # Indicate cancellation
+                ;;
+            *)
+                if [[ -n "$conn" ]]; then
+                    chosen_connection="$conn"
+                    PS3=$PS3_backup
+                    # *** RETURN VALUE: Echo ONLY the selection to STDOUT ***
+                    echo "$chosen_connection"
+                    return 0 # Indicate success
+                else
+                    # Error message to STDERR
+                    print_error "Invalid selection. Please enter a number from the list."
+                    # select automatically re-displays the menu on invalid input number
+                fi
+                ;;
+        esac
+    done
+    # Fallback if select somehow exits unexpectedly
+    PS3=$PS3_backup
+    print_error "Failed to get selection." # To STDERR
+    return 1
+}
 
 
-if [ "$COMMAND" = "connect" ] || [ "$COMMAND" = "con" ]; then
-connecting
-fi
+# Connect to SSH host
+connect_connection() {
+    local selector="$1"
+    local connection_to_use
 
-if [ "$COMMAND" = "select" ] || [ "$COMMAND" = "sel" ]; then
-selection
-fi
+    # Capture ONLY STDOUT from select_connection
+    connection_to_use=$(select_connection "connect" "$selector")
+    local select_status=$? # Get the return status
 
-if [ "$COMMAND" = "list" ] || [ "$COMMAND" = "view" ] || [ "$COMMAND" = "show" ]; then
-view
-fi
+    # Check if select_connection succeeded (returned 0) and gave output
+    if [[ $select_status -eq 0 ]] && [[ -n "$connection_to_use" ]]; then
+        # Info message to STDERR before attempting
+        info_message "Attempting SSH connection to ${WHITE}${connection_to_use}${NC}..."
+        # Run ssh as a child process, DO NOT use exec
+        # Use stty sane before ssh call to ensure terminal behaves correctly
+        # and restore after. select can sometimes mess with terminal modes.
+        local term_settings=$(stty -g) # Save current settings
+        stty sane # Reset to known good state
+        if ssh "$connection_to_use"; then
+            stty "$term_settings" # Restore settings
+            # Success message to STDOUT
+            success_message "SSH session ended."
+        else
+            local ssh_exit_status=$?
+            stty "$term_settings" # Restore settings on failure too
+            # Error message to STDERR
+            print_error "SSH connection to '${WHITE}${connection_to_use}${NC}' failed or was interrupted (Exit status: $ssh_exit_status)."
+        fi
+        # Control returns here after ssh finishes or fails
+    elif [[ $select_status -ne 0 ]]; then
+        # Error or cancellation message already printed to STDERR by select_connection
+        : # Do nothing, loop will continue
+    else
+        # Should not happen if select_status is 0 but connection is empty
+         print_error "Could not determine connection (internal error)." # To STDERR
+    fi
+    # Return the status of the selection process itself (not ssh status)
+    # Could potentially return ssh status if needed elsewhere
+    return $select_status
+}
 
-if [ "$COMMAND" = "info" ]; then
-info
-fi
+# Delete a connection
+delete_connection() {
+    local selector="$1"
+    local connection_to_delete
 
-if [ "$COMMAND" = "bashfetch" ]; then
-clear
-bashfetch
-fi
+    # Capture ONLY STDOUT
+    connection_to_delete=$(select_connection "delete" "$selector")
+    local select_status=$?
 
-if [ "$COMMAND" = "clear" ]; then
-clear
-fi
+    if [[ $select_status -eq 0 ]] && [[ -n "$connection_to_delete" ]]; then
+        local temp_file
+        temp_file=$(mktemp)
+        if grep -vFx "$connection_to_delete" "$CONFIG_FILE" > "$temp_file"; then
+            if ! cmp -s "$CONFIG_FILE" "$temp_file"; then
+                 mv "$temp_file" "$CONFIG_FILE"
+                 success_message "Connection '${WHITE}${connection_to_delete}${NC}' deleted." # To STDOUT
+                 return 0
+            else
+                 # Info message to STDERR
+                 info_message "Connection '${WHITE}${connection_to_delete}${NC}' not found in file (already deleted?)."
+                 rm "$temp_file"
+                 return 1
+            fi
+        else
+            rm "$temp_file"
+            print_error "Failed to create temporary file for deletion." # To STDERR
+            return 1
+        fi
+    else
+        # Error or cancellation already handled (printed to STDERR) by select_connection
+        return 1
+    fi
+}
+
+# Edit a connection
+edit_connection() {
+    local selector="$1"
+    local old_connection
+    local new_connection
+
+    # Capture ONLY STDOUT
+    old_connection=$(select_connection "edit" "$selector")
+    local select_status=$?
+
+    if [[ $select_status -eq 0 ]] && [[ -n "$old_connection" ]]; then
+        # Prompt for the new value using read. Prompts go to STDERR.
+        echo -e -n "${YELLOW}Current value: ${WHITE}${old_connection}${NC}\n${YELLOW}Enter new value (user@host, blank to cancel): ${NC}" >&2
+        read -r new_connection # Reads from STDIN
+
+        if [[ -z "$new_connection" ]]; then
+            info_message "Edit cancelled. No changes made." # To STDERR
+            return 1
+        fi
+
+        # Basic validation
+        if ! [[ "$new_connection" =~ ^.+@.+$ ]]; then
+            print_error "Invalid format for new value. Use: user@host. No changes made." # To STDERR
+            return 1
+        fi
+
+        # Check if the new connection already exists
+        if [[ "$new_connection" != "$old_connection" ]] && grep -qFx "$new_connection" "$CONFIG_FILE"; then
+            print_error "The new connection '${WHITE}${new_connection}${NC}' already exists. No changes made." # To STDERR
+            return 1
+        fi
+
+        # Use sed with temp file for safety
+        local temp_file=$(mktemp)
+        local escaped_old_connection=$(sed 's/[&/\]/\\&/g' <<< "$old_connection")
+        local escaped_new_connection=$(sed 's/[&/\]/\\&/g' <<< "$new_connection")
+
+        if sed "s/^${escaped_old_connection}$/${escaped_new_connection}/" "$CONFIG_FILE" > "$temp_file"; then
+            if ! cmp -s "$CONFIG_FILE" "$temp_file"; then
+                 mv "$temp_file" "$CONFIG_FILE"
+                 success_message "Connection updated from '${WHITE}${old_connection}${NC}' to '${WHITE}${new_connection}${NC}'." # To STDOUT
+                 return 0
+            else
+                 info_message "Connection '${WHITE}${old_connection}${NC}' not found for edit (unexpected)." # To STDERR
+                 rm "$temp_file"
+                 return 1
+            fi
+        else
+            rm "$temp_file"
+            print_error "Failed to perform substitution for edit." # To STDERR
+            return 1
+        fi
+    else
+        # Error or cancellation handled (printed to STDERR) by select_connection
+        return 1
+    fi
+}
 
 
-BashSSH
+# Ping the host part of a connection
+ping_host() {
+    local selector="$1"
+    local connection_to_ping
+    local host_to_ping
+
+    # Capture ONLY STDOUT
+    connection_to_ping=$(select_connection "ping" "$selector")
+    local select_status=$?
+
+    if [[ $select_status -eq 0 ]] && [[ -n "$connection_to_ping" ]]; then
+        host_to_ping="${connection_to_ping##*@}"
+        if [[ -z "$host_to_ping" ]] || [[ "$host_to_ping" == "$connection_to_ping" ]]; then
+             print_error "Could not extract host part from '${WHITE}${connection_to_ping}${NC}'." # To STDERR
+             return 1
+        fi
+
+        info_message "Pinging host ${WHITE}${host_to_ping}${NC} (from ${connection_to_ping})..." # To STDERR
+        # Run ping as a child process. Output goes to STDOUT/STDERR as usual.
+        if ping -c 4 "$host_to_ping"; then
+            success_message "Ping finished." # To STDOUT
+            return 0
+        else
+            print_error "Ping command failed for host '${WHITE}${host_to_ping}${NC}'." # To STDERR
+            return 1
+        fi
+    else
+        # Error or cancellation handled (printed to STDERR) by select_connection
+        return 1
+    fi
+}
+
+
+# --- Main Script Logic ---
+
+ensure_config_exists
+
+# Trap signals for graceful exit
+trap cleanup_and_exit SIGINT SIGTERM SIGHUP
+
+# Welcome message to STDERR
+info_message "Welcome to BashSSH v${VERSION}. Type '/help' for commands."
+
+# --- Main Read-Eval-Print Loop (REPL) ---
+while true; do
+    # Read input with prompt, readline support, and history
+    # Prompt goes to STDERR (default for read -p)
+    if ! read -e -p "$(echo -e "${PROMPT_COLOR}bashssh>${NC} ")" -r user_input; then
+        # Handle Ctrl+D (EOF)
+        cleanup_and_exit
+    fi
+
+    # Skip empty input
+    [[ -z "$user_input" ]] && continue
+
+    # Parse input into command and arguments array
+    read -r -a input_parts <<< "$user_input"
+    COMMAND="${input_parts[0]}"
+    ARG1="${input_parts[1]:-}"
+
+
+    # Evaluate the command
+    case "$COMMAND" in
+        /help|-h|--help)
+            show_help # Prints to STDOUT
+            ;;
+        /add|/new)
+            if [[ -z "$ARG1" ]]; then
+                print_error "Missing connection string. Usage: /add user@host"
+            else
+                add_connection "$ARG1" # Prints success/info/error
+            fi
+            ;;
+        /list|/ls)
+            list_connections # Prints list or info message to STDOUT
+            ;;
+        /connect|/conn)
+            connect_connection "$ARG1" # Handles its own messages/ssh output
+            ;;
+         /delete|/del|/remove|/rm)
+            delete_connection "$ARG1" # Handles its own messages
+            ;;
+         /edit)
+             edit_connection "$ARG1" # Handles its own messages
+             ;;
+          /ping)
+              ping_host "$ARG1" # Handles its own messages/ping output
+              ;;
+        /exit|/quit|q)
+            cleanup_and_exit
+            ;;
+        *)
+            # Treat unknown input starting with / as an error
+            if [[ "$COMMAND" == /* ]]; then
+                print_error "Unknown command: '$COMMAND'. Type '/help' for commands."
+            else
+                # Implicit connect: try connecting using the input as a filter
+                # Info message to STDERR
+                info_message "Input doesn't start with '/'. Assuming filter for /connect..."
+                connect_connection "$COMMAND"
+            fi
+            ;;
+    esac
+    # Add a blank line for spacing? Optional. Makes output less dense.
+    # echo
+done
+# --- End Main Loop ---
+
+# Should not be reached
+exit 1
